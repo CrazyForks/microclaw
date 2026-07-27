@@ -8,6 +8,19 @@ The format is loosely based on Keep a Changelog. Dates use UTC.
 
 ### Added
 
+- **Failure-aware retrieval and skill recovery.** Verified failures and active
+  task-scoped skill contraindications are excluded from prompt injection while
+  their rejection reasons remain visible in the Learning Journal. Structured
+  failure patterns track environment, tool, error category, cooldown, recovery
+  trials, and automatic resolution from verified successes.
+- **Task-signature and risk-adjusted skill evaluation.** Experience runs now
+  carry a deterministic v1 task type, task family, capability tags, and stable
+  signature hash, with schema-v38 backfill for existing history. Skill quality
+  is aggregated overall and per task family with a configurable Wilson lower
+  bound. Trial promotion requires both raw success and conservative utility;
+  applicability and verified-experience retrieval now incorporate task
+  compatibility, capability overlap, and utility rather than relying only on
+  text and environment matches.
 - **Verified long-horizon learning substrate.** Agent turns now produce durable
   goal, experience-run, verifier-evidence, skill-version, and attributed
   skill-outcome records. Governed skills progress through

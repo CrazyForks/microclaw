@@ -1238,7 +1238,7 @@ async fn process_with_agent_logic(
     })
     .await
     .unwrap_or_default();
-    let safe_experiences = verified_experiences
+    let safe_candidates = verified_experiences
         .into_iter()
         .filter(|experience| {
             microclaw_core::injection_scan::scan_for_injection(&experience.objective).is_ok()
@@ -1250,6 +1250,9 @@ async fn process_with_agent_logic(
                     .is_ok()
         })
         .collect::<Vec<_>>();
+    let (rejected_experiences, safe_experiences): (Vec<_>, Vec<_>) = safe_candidates
+        .into_iter()
+        .partition(|experience| experience.rejection_reason.is_some());
     if let Ok(querying_run_id) = EXPERIENCE_RUN_ID.try_with(Clone::clone) {
         let retrievals = safe_experiences
             .iter()
@@ -1261,8 +1264,12 @@ async fn process_with_agent_logic(
                 (
                     experience.run_id.clone(),
                     format!(
-                        "strong_verified; lexical_or_phrase_relevance; environment_match={environment_match}; verifier={}; verdict={}",
-                        experience.verifier_type, experience.verdict
+                        "strong_verified; task_type={}; task_family={}; utility_lower_bound={:.3}; environment_match={environment_match}; verifier={}; verdict={}",
+                        experience.task_signature.task_type,
+                        experience.task_signature.task_family,
+                        experience.utility_lower_bound,
+                        experience.verifier_type,
+                        experience.verdict
                     ),
                     experience.relevance_score,
                 )
@@ -1275,6 +1282,26 @@ async fn process_with_agent_logic(
         {
             warn!("failed to persist experience retrieval selections: {error}");
         }
+        let querying_run_id = EXPERIENCE_RUN_ID.try_with(Clone::clone).unwrap_or_default();
+        let rejections = rejected_experiences
+            .iter()
+            .filter_map(|experience| {
+                experience.rejection_reason.as_ref().map(|reason| {
+                    (
+                        experience.run_id.clone(),
+                        reason.clone(),
+                        experience.relevance_score,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        if let Err(error) = call_blocking(state.db.clone(), move |db| {
+            db.record_experience_rejections(&querying_run_id, &rejections)
+        })
+        .await
+        {
+            warn!("failed to persist experience retrieval rejections: {error}");
+        }
     }
     if !safe_experiences.is_empty() {
         system_prompt.push_str(
@@ -1284,7 +1311,10 @@ async fn process_with_agent_logic(
             let summary = experience.result_summary.unwrap_or_default();
             let summary_end = floor_char_boundary(&summary, summary.len().min(600));
             system_prompt.push_str(&format!(
-                "- verdict={} verifier={} confidence={:.2} objective={:?} summary={:?} duration_ms={} tokens={} tool_calls={} tool_errors={} cost_usd={}\n",
+                "- task_type={} task_family={} utility_lower_bound={:.3} verdict={} verifier={} confidence={:.2} objective={:?} summary={:?} duration_ms={} tokens={} tool_calls={} tool_errors={} cost_usd={}\n",
+                experience.task_signature.task_type,
+                experience.task_signature.task_family,
+                experience.utility_lower_bound,
                 experience.verdict,
                 experience.verifier_type,
                 experience.confidence,
@@ -3975,9 +4005,13 @@ mod tests {
             detail.retrieved_experiences[0].source_run_id,
             "verified-source"
         );
+        assert_eq!(detail.run.task_signature.task_family, "deployment");
         assert!(detail.retrieved_experiences[0]
             .selection_reason
             .contains("strong_verified"));
+        assert!(detail.retrieved_experiences[0]
+            .selection_reason
+            .contains("utility_lower_bound="));
 
         drop(state);
         let _ = std::fs::remove_dir_all(&base_dir);

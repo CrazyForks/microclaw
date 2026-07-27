@@ -132,6 +132,12 @@ fn format_learning_run_detail(detail: &microclaw_storage::db::ExperienceRunDetai
         ),
         format!("objective: {}", detail.run.objective),
         format!(
+            "task: {} / {} [{}]",
+            detail.run.task_signature.task_type,
+            detail.run.task_signature.task_family,
+            detail.run.task_signature.capability_tags.join(", ")
+        ),
+        format!(
             "result: {}",
             detail.run.result_summary.as_deref().unwrap_or("(none)")
         ),
@@ -153,6 +159,24 @@ fn format_learning_run_detail(detail: &microclaw_storage::db::ExperienceRunDetai
                     .as_deref()
                     .unwrap_or("(none)"),
                 retrieval.selection_reason
+            ));
+        }
+    }
+    lines.push(String::new());
+    lines.push(format!(
+        "Experiences rejected ({})",
+        detail.rejected_experiences.len()
+    ));
+    if detail.rejected_experiences.is_empty() {
+        lines.push("  (none)".into());
+    } else {
+        for rejection in &detail.rejected_experiences {
+            lines.push(format!(
+                "  {} score={:.3} objective={} reason={}",
+                rejection.source_run_id,
+                rejection.relevance_score,
+                rejection.source_objective,
+                rejection.rejection_reason
             ));
         }
     }
