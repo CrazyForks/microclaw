@@ -6,6 +6,8 @@ The format is loosely based on Keep a Changelog. Dates use UTC.
 
 ## Unreleased
 
+## 0.3.2 - 2026-07-28
+
 ### Added
 
 - **Comparative reflection and governed skill evolution.** Comparable
@@ -108,6 +110,13 @@ The format is loosely based on Keep a Changelog. Dates use UTC.
   rejected, Telegram/Discord/Slack/Feishu now log an actionable message ("authentication
   failed … check the token / run `microclaw setup`") instead of a generic or silent error,
   so a bad token isn't mistaken for the bot just going quiet. Part of the usability push.
+
+### Fixed
+
+- Built-in skill frontmatter now parses consistently from LF and CRLF checkouts, so
+  platform and dependency gates no longer install incompatible skills on Windows.
+- Release verification tests now use platform-native commands, paths, and symlink
+  capabilities across Windows and Unix hosts.
 
 ### Added
 

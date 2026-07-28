@@ -185,8 +185,7 @@ pub fn evaluate_tool_policy_for_auth(
             auth.principal
         ))
     } else if matching.iter().any(|rule| {
-        rule
-            .max_risk
+        rule.max_risk
             .is_some_and(|max_risk| tool_risk(tool_name) > max_risk)
     }) {
         Some(format!(
@@ -212,10 +211,7 @@ pub fn evaluate_tool_policy_for_auth(
     }
 }
 
-fn grant_matches(
-    rule: &ToolGrantRule,
-    auth: &microclaw_tools::runtime::ToolAuthContext,
-) -> bool {
+fn grant_matches(rule: &ToolGrantRule, auth: &microclaw_tools::runtime::ToolAuthContext) -> bool {
     rule.chat_id
         .is_none_or(|chat_id| chat_id == auth.caller_chat_id)
         && rule

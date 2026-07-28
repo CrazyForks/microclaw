@@ -302,8 +302,7 @@ pub(super) async fn api_config_self_check(
                     .to_string(),
         });
     }
-    if state.app_state.config.tool_policy.grants_mode
-        == crate::tool_guardrails::ToolPolicyMode::Off
+    if state.app_state.config.tool_policy.grants_mode == crate::tool_guardrails::ToolPolicyMode::Off
     {
         warnings.push(ConfigWarning {
             code: "tool_capability_grants_disabled",

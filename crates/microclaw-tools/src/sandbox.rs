@@ -754,10 +754,15 @@ mod tests {
             envs: HashMap::new(),
             env_files: Vec::new(),
         };
-        let out = router.exec("chat-1", "printf microclaw-smoke", &opts).await;
+        #[cfg(target_os = "windows")]
+        let command = "Write-Output -NoEnumerate microclaw-smoke";
+        #[cfg(not(target_os = "windows"))]
+        let command = "printf microclaw-smoke";
+
+        let out = router.exec("chat-1", command, &opts).await;
         let out = out.expect("expected host fallback execution");
         assert_eq!(out.exit_code, 0);
-        assert_eq!(out.stdout, "microclaw-smoke");
+        assert_eq!(out.stdout.trim_end(), "microclaw-smoke");
     }
 
     #[tokio::test]

@@ -73,8 +73,7 @@ fn valid_checkpoint_session(json: &str) -> bool {
                     .into_iter()
                     .filter_map(|block| match block {
                         microclaw_core::llm_types::ContentBlock::ToolResult {
-                            tool_use_id,
-                            ..
+                            tool_use_id, ..
                         } => Some(tool_use_id),
                         _ => None,
                     })
@@ -221,7 +220,8 @@ pub async fn run_startup_recovery(state: Arc<AppState>) {
 }
 
 async fn clear_recovered_turn(state: &AppState, chat_id: i64) {
-    if let Err(error) = call_blocking(state.db.clone(), move |db| db.clear_turn_active(chat_id)).await
+    if let Err(error) =
+        call_blocking(state.db.clone(), move |db| db.clear_turn_active(chat_id)).await
     {
         warn!("Startup recovery: failed to clear terminal turn {chat_id}: {error}");
     }

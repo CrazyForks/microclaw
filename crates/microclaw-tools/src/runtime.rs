@@ -141,28 +141,54 @@ pub enum ToolConcurrencyClass {
 pub fn tool_concurrency_class(name: &str) -> ToolConcurrencyClass {
     match name {
         // Read-only tools: safe to parallelize
-        "read_file" | "glob" | "grep" | "web_fetch" | "web_search" | "deep_research"
+        "read_file"
+        | "glob"
+        | "grep"
+        | "web_fetch"
+        | "web_search"
+        | "deep_research"
         | "get_current_time"
-        | "compare_time" | "calculate" | "read_memory" | "structured_memory_search"
-        | "todo_read" | "export_chat" | "a2a_list_peers" | "list_scheduled_tasks"
-        | "get_scheduled_task_history" | "list_scheduled_task_dlq" | "subagents_list"
-        | "subagents_info" | "subagents_focused" | "subagents_log" | "browser"
-        | "fetch_artifact" => {
-            ToolConcurrencyClass::ReadOnly
-        }
+        | "compare_time"
+        | "calculate"
+        | "read_memory"
+        | "structured_memory_search"
+        | "todo_read"
+        | "export_chat"
+        | "a2a_list_peers"
+        | "list_scheduled_tasks"
+        | "get_scheduled_task_history"
+        | "list_scheduled_task_dlq"
+        | "subagents_list"
+        | "subagents_info"
+        | "subagents_focused"
+        | "subagents_log"
+        | "browser"
+        | "fetch_artifact" => ToolConcurrencyClass::ReadOnly,
         // Exclusive tools: must run alone
         "bash" | "activate_skill" | "sessions_spawn" => ToolConcurrencyClass::Exclusive,
         // MCP tools: default to SideEffect (unknown external effects)
         _ if name.starts_with("mcp_") => ToolConcurrencyClass::SideEffect,
         // All other tools with side effects
-        "write_file" | "edit_file" | "write_memory" | "send_message" | "a2a_send"
-        | "schedule_task" | "pause_scheduled_task" | "resume_scheduled_task"
-        | "cancel_scheduled_task" | "replay_scheduled_task_dlq" | "structured_memory_update"
-        | "structured_memory_delete" | "todo_write" | "sync_skills" | "subagents_send"
-        | "subagents_focus" | "subagents_unfocus" | "subagents_kill"
-        | "subagents_retry_announces" | "subagents_orchestrate" => {
-            ToolConcurrencyClass::SideEffect
-        }
+        "write_file"
+        | "edit_file"
+        | "write_memory"
+        | "send_message"
+        | "a2a_send"
+        | "schedule_task"
+        | "pause_scheduled_task"
+        | "resume_scheduled_task"
+        | "cancel_scheduled_task"
+        | "replay_scheduled_task_dlq"
+        | "structured_memory_update"
+        | "structured_memory_delete"
+        | "todo_write"
+        | "sync_skills"
+        | "subagents_send"
+        | "subagents_focus"
+        | "subagents_unfocus"
+        | "subagents_kill"
+        | "subagents_retry_announces"
+        | "subagents_orchestrate" => ToolConcurrencyClass::SideEffect,
         // Unknown tools: conservative default
         _ => ToolConcurrencyClass::SideEffect,
     }
