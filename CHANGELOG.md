@@ -6,6 +6,30 @@ The format is loosely based on Keep a Changelog. Dates use UTC.
 
 ## Unreleased
 
+## 0.3.3 - 2026-07-30
+
+### Added
+
+- **Reliability Proof Pack.** `scripts/ci/reliability_scorecard.sh` now exercises
+  recovery, scheduler replay, durable delivery, payload integrity, rate-limit
+  recovery, command timeout, malformed provider wrappers, output sanitization,
+  cross-chat permissions, and sandbox fail-closed behavior. It emits a
+  machine-readable JSON scorecard, a linked Markdown report, and per-scenario
+  logs; the existing Stability Smoke release gate runs the proof pack.
+- **Contract-governed deep research workflow.** The new built-in
+  `deep-research-workflow` skill decomposes broad questions into distinct
+  parallel research packages, requires source ledgers and completion
+  contracts, runs an adversarial verifier, and reports citation coverage,
+  source independence, conflict disposition, unsupported claims, and a final
+  PASS/FAIL verdict before synthesis.
+
+### Fixed
+
+- Database schema v41 repairs incomplete historical `scheduled_tasks`
+  migrations even when `db_meta.schema_version` was already advanced. Existing
+  databases missing `exit_criteria`, `run_count`, `max_runs`, `not_after`, or
+  `timezone` are repaired on open before scheduler queries execute.
+
 ## 0.3.2 - 2026-07-28
 
 ### Added

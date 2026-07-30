@@ -613,7 +613,7 @@ pub struct AuditLogRecord {
 pub type SessionMetaRow = (String, String, Option<String>, Option<i64>);
 pub type SessionTreeRow = (i64, Option<String>, Option<i64>, String);
 
-const SCHEMA_VERSION_CURRENT: i64 = 40;
+const SCHEMA_VERSION_CURRENT: i64 = 41;
 
 pub fn wilson_lower_bound(passed: i64, total: i64, z: f64) -> f64 {
     if total <= 0 || passed < 0 || passed > total || !z.is_finite() || z < 0.0 {
@@ -1113,6 +1113,37 @@ fn ensure_sessions_schema(conn: &Connection) -> Result<(), MicroClawError> {
     Ok(())
 }
 
+fn ensure_scheduled_tasks_schema(conn: &Connection) -> Result<(), MicroClawError> {
+    if !table_has_column(conn, "scheduled_tasks", "exit_criteria")? {
+        conn.execute(
+            "ALTER TABLE scheduled_tasks ADD COLUMN exit_criteria TEXT",
+            [],
+        )?;
+    }
+    if !table_has_column(conn, "scheduled_tasks", "run_count")? {
+        conn.execute(
+            "ALTER TABLE scheduled_tasks ADD COLUMN run_count INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    if !table_has_column(conn, "scheduled_tasks", "max_runs")? {
+        conn.execute(
+            "ALTER TABLE scheduled_tasks ADD COLUMN max_runs INTEGER",
+            [],
+        )?;
+    }
+    if !table_has_column(conn, "scheduled_tasks", "not_after")? {
+        conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN not_after TEXT", [])?;
+    }
+    if !table_has_column(conn, "scheduled_tasks", "timezone")? {
+        conn.execute(
+            "ALTER TABLE scheduled_tasks ADD COLUMN timezone TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
 fn get_schema_version(conn: &Connection) -> Result<i64, MicroClawError> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS db_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -1362,33 +1393,7 @@ fn apply_schema_migrations(conn: &Connection) -> Result<(), MicroClawError> {
         version = 11;
     }
     if version < 12 {
-        if !table_has_column(conn, "scheduled_tasks", "exit_criteria")? {
-            conn.execute(
-                "ALTER TABLE scheduled_tasks ADD COLUMN exit_criteria TEXT",
-                [],
-            )?;
-        }
-        if !table_has_column(conn, "scheduled_tasks", "run_count")? {
-            conn.execute(
-                "ALTER TABLE scheduled_tasks ADD COLUMN run_count INTEGER NOT NULL DEFAULT 0",
-                [],
-            )?;
-        }
-        if !table_has_column(conn, "scheduled_tasks", "max_runs")? {
-            conn.execute(
-                "ALTER TABLE scheduled_tasks ADD COLUMN max_runs INTEGER",
-                [],
-            )?;
-        }
-        if !table_has_column(conn, "scheduled_tasks", "not_after")? {
-            conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN not_after TEXT", [])?;
-        }
-        if !table_has_column(conn, "scheduled_tasks", "timezone")? {
-            conn.execute(
-                "ALTER TABLE scheduled_tasks ADD COLUMN timezone TEXT NOT NULL DEFAULT ''",
-                [],
-            )?;
-        }
+        ensure_scheduled_tasks_schema(conn)?;
         set_schema_version(conn, 12)?;
         version = 12;
     }
@@ -2549,6 +2554,13 @@ fn apply_schema_migrations(conn: &Connection) -> Result<(), MicroClawError> {
         tx.commit()?;
         set_schema_version(conn, 40)?;
         version = 40;
+    }
+    if version < 41 {
+        // Repair databases whose recorded schema version advanced despite an
+        // incomplete historical scheduled_tasks migration or restore.
+        ensure_scheduled_tasks_schema(conn)?;
+        set_schema_version(conn, 41)?;
+        version = 41;
     }
     if version != SCHEMA_VERSION_CURRENT {
         set_schema_version(conn, SCHEMA_VERSION_CURRENT)?;
@@ -12240,6 +12252,56 @@ mod tests {
             drop(conn);
             cleanup(&dir);
         }
+    }
+
+    #[test]
+    fn test_current_version_repairs_incomplete_scheduled_tasks_schema() {
+        let dir = std::env::temp_dir().join(format!(
+            "microclaw_incomplete_scheduled_tasks_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("microclaw.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE scheduled_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                prompt TEXT NOT NULL,
+                schedule_type TEXT NOT NULL DEFAULT 'cron',
+                schedule_value TEXT NOT NULL,
+                next_run TEXT NOT NULL,
+                last_run TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL
+             );
+             CREATE TABLE db_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO db_meta(key, value) VALUES('schema_version', '40');",
+        )
+        .unwrap();
+        drop(conn);
+
+        let db = Database::new(dir.to_str().unwrap()).unwrap();
+        let conn = db.lock_conn();
+        for column in [
+            "exit_criteria",
+            "run_count",
+            "max_runs",
+            "not_after",
+            "timezone",
+        ] {
+            assert!(
+                table_has_column(&conn, "scheduled_tasks", column).unwrap(),
+                "missing repaired scheduled_tasks.{column}"
+            );
+        }
+        let version = get_schema_version(&conn).unwrap();
+        assert_eq!(version, SCHEMA_VERSION_CURRENT);
+        drop(conn);
+
+        // Exercise the exact query shape that failed in production.
+        assert!(db.get_tasks_for_chat(1).unwrap().is_empty());
+        cleanup(&dir);
     }
 
     #[test]
