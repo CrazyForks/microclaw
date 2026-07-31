@@ -543,6 +543,20 @@ while `GET/PUT /api/learning/policy` reads or admin-updates lifecycle
 thresholds. See [Long-horizon learning](docs/long-horizon-learning.md) for the
 data model and promotion policy.
 
+**Learning Foundry** adds proactive, user-directed growth on top of this
+experience loop. A learning track has an objective, source allowlist, cron
+schedule, timezone, and per-epoch budgets. Background research is read-only;
+a separate curator may create one source-backed, test-bearing candidate, which
+stays inert until an administrator explicitly promotes it. Existing skills
+cannot be overwritten through this path. See
+[Learning Foundry](docs/learning-foundry.md).
+Candidates are automatically tested against a no-skill baseline in an isolated,
+no-tool harness. Promotion remains an explicit admin action and is blocked
+unless the paired evaluation improves on baseline without regressions.
+Promoted skills enter the existing candidate/trial Canary lifecycle rather than
+being marked trusted immediately, so verified outcomes can advance or degrade
+them and trigger rollback where a trusted predecessor exists.
+
 ```
 <data_dir>/skills/
     pdf/
