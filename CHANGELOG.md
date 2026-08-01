@@ -6,6 +6,16 @@ The format is loosely based on Keep a Changelog. Dates use UTC.
 
 ## Unreleased
 
+## 0.3.5 - 2026-08-01
+
+### Changed
+
+- Dependency maintenance now checks Cargo and Web npm updates weekly after a
+  seven-day cooldown, keeps GitHub Actions on a predictable monthly schedule,
+  and splits large update groups by SemVer level or dependency type. Web UI,
+  CI, nightly, and release builds now require Node.js 24.x and enforce package
+  engine compatibility during npm installs.
+
 ## 0.3.4 - 2026-07-31
 
 ### Added
