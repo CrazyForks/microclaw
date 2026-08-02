@@ -6,6 +6,12 @@ The format is loosely based on Keep a Changelog. Dates use UTC.
 
 ## Unreleased
 
+### Changed
+
+- Reworked the root README files into concise project entry points, moved
+  setup and integration detail into task-focused documentation, and added
+  localized overview and quick-start pages for 10 widely used languages.
+
 ## 0.3.5 - 2026-08-01
 
 ### Changed
