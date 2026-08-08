@@ -473,7 +473,18 @@ pub async fn run(
     let mut tools = tools;
 
     for (server, tool_info) in mcp_manager.all_tools() {
-        tools.add_tool(Box::new(crate::tools::mcp::McpTool::new(server, tool_info)));
+        // Server trust tier → effective tool risk at the policy/approval
+        // choke points. `limited` (the default) keeps the historical
+        // uniform-medium behavior for MCP tools.
+        let risk = match server.trust() {
+            crate::mcp::McpTrust::Trusted => microclaw_tools::runtime::ToolRisk::Low,
+            crate::mcp::McpTrust::Limited => microclaw_tools::runtime::ToolRisk::Medium,
+            crate::mcp::McpTrust::Sandboxed => microclaw_tools::runtime::ToolRisk::High,
+        };
+        tools.add_tool_with_risk(
+            Box::new(crate::tools::mcp::McpTool::new(server, tool_info)),
+            risk,
+        );
     }
 
     let hooks = Arc::new(HookManager::from_config(&config).with_db(db.clone()));
@@ -522,6 +533,8 @@ pub async fn run(
         });
     }
     crate::outbox::spawn_outbox_flush(state.clone());
+    crate::alerts::spawn_alerts(state.clone());
+    crate::trust_report::spawn_trust_report(state.clone());
     crate::scheduler::spawn_scheduler(state.clone());
     crate::scheduler::spawn_dlq_replay(state.clone());
     crate::scheduler::spawn_reflector(state.clone());

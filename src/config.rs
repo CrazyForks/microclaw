@@ -387,6 +387,21 @@ fn default_true() -> bool {
     true
 }
 
+/// Load-time verification policy for ClawHub-managed skill trees.
+///
+/// `block` (default) makes a skill whose on-disk tree no longer matches the
+/// lockfile hash unavailable until it is reinstalled; `warn` only logs;
+/// `off` disables the check. Entries installed before tree hashing existed
+/// (no recorded hash) always warn instead of blocking.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClawHubVerifyMode {
+    Off,
+    Warn,
+    #[default]
+    Block,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ClawHubConfig {
     /// ClawHub registry URL
@@ -401,6 +416,9 @@ pub struct ClawHubConfig {
     /// Skip security warnings for ClawHub installs
     #[serde(default, rename = "clawhub_skip_security_warnings")]
     pub skip_security_warnings: bool,
+    /// Verify installed skill trees against the lockfile whenever skills load
+    #[serde(default, rename = "clawhub_verify_on_load")]
+    pub verify_on_load: ClawHubVerifyMode,
 }
 
 impl Default for ClawHubConfig {
@@ -410,6 +428,7 @@ impl Default for ClawHubConfig {
             token: None,
             agent_tools_enabled: default_true(),
             skip_security_warnings: false,
+            verify_on_load: ClawHubVerifyMode::default(),
         }
     }
 }
@@ -951,6 +970,13 @@ pub struct AuxModels {
     /// `media.vision.model` when set; falls back to it when unset or empty.
     #[serde(default)]
     pub vision: Option<String>,
+    /// Model that writes a short advisory verdict on high-risk tool
+    /// approval prompts. Unlike the other slots this does NOT fall back to
+    /// the main model: unset means the reviewer is off (the default), so
+    /// enabling it is an explicit operator choice. Advisory only — it never
+    /// approves or denies anything itself.
+    #[serde(default)]
+    pub approval_reviewer: Option<String>,
 }
 
 impl AuxModels {
@@ -1161,6 +1187,94 @@ impl TokenBudgetConfig {
     }
 }
 
+fn default_alerts_interval_secs() -> u64 {
+    60
+}
+fn default_alerts_cooldown_secs() -> u64 {
+    900
+}
+fn default_alerts_restart_storm_threshold() -> u64 {
+    5
+}
+
+/// Opt-in operational webhook alerts. When enabled, a supervised loop
+/// polls runtime health every `interval_secs` and POSTs a JSON alert to
+/// `webhook_url` when a condition trips: scheduler DLQ growth, provider
+/// down (circuit breaker open / repeated failures), token-budget
+/// exhaustion, or a supervised-loop restart storm. OFF by default; the
+/// webhook URL participates in the configured-endpoint egress policy.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AlertsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Webhook that receives alert POSTs (JSON body: class, message,
+    /// generated_at).
+    #[serde(default)]
+    pub webhook_url: String,
+    /// Seconds between health polls. Default: 60 (min 10).
+    #[serde(default = "default_alerts_interval_secs")]
+    pub interval_secs: u64,
+    /// Minimum seconds between two alerts of the same class. Default: 900.
+    #[serde(default = "default_alerts_cooldown_secs")]
+    pub cooldown_secs: u64,
+    /// Supervised-loop restarts within one poll interval that count as a
+    /// storm. Default: 5.
+    #[serde(default = "default_alerts_restart_storm_threshold")]
+    pub restart_storm_threshold: u64,
+}
+
+impl Default for AlertsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            webhook_url: String::new(),
+            interval_secs: default_alerts_interval_secs(),
+            cooldown_secs: default_alerts_cooldown_secs(),
+            restart_storm_threshold: default_alerts_restart_storm_threshold(),
+        }
+    }
+}
+
+/// Language for user-facing runtime messages (refusals, approval prompts,
+/// recovery notices). `en` preserves historical output; approval reply
+/// keywords are recognized in both languages regardless.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UserMessageLanguage {
+    #[default]
+    En,
+    Zh,
+    Bilingual,
+}
+
+fn default_trust_report_interval_days() -> u64 {
+    7
+}
+
+/// Opt-in periodic "trust report": a digest of what the agent actually did
+/// — task runs, contract verdicts, token spend, guardrail interventions,
+/// delivery/recovery health — delivered to every control chat. OFF by
+/// default. Built entirely from data MicroClaw already records (usage
+/// ledger, contract events, tamper-evident audit chain), so enabling it
+/// costs no extra LLM calls.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TrustReportConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Days between reports. Default: 7.
+    #[serde(default = "default_trust_report_interval_days")]
+    pub interval_days: u64,
+}
+
+impl Default for TrustReportConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_days: default_trust_report_interval_days(),
+        }
+    }
+}
+
 fn default_heartbeat_interval_mins() -> u64 {
     30
 }
@@ -1261,6 +1375,21 @@ impl Default for InterjectionConfig {
     }
 }
 
+/// Named per-peer trust tier for outbound A2A sends. `limited` (default)
+/// keeps the historical behavior; `sandboxed` treats a send to this peer
+/// as high-risk — on web/control chats it requires the explicit approval
+/// flow before the message leaves. `trusted` is currently equivalent to
+/// `limited` and reserved for future capability widening; tiers never
+/// lower existing guardrails.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum A2ATrust {
+    Trusted,
+    #[default]
+    Limited,
+    Sandboxed,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct A2APeerConfig {
     #[serde(default = "default_true")]
@@ -1273,6 +1402,9 @@ pub struct A2APeerConfig {
     pub description: Option<String>,
     #[serde(default)]
     pub default_session_key: Option<String>,
+    /// Trust tier for sends to this peer. Default: limited.
+    #[serde(default)]
+    pub trust: A2ATrust,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1454,6 +1586,13 @@ pub struct Config {
     pub heartbeat: HeartbeatConfig,
     #[serde(default)]
     pub token_budget: TokenBudgetConfig,
+    #[serde(default)]
+    pub alerts: AlertsConfig,
+    #[serde(default)]
+    pub trust_report: TrustReportConfig,
+    /// Language for user-facing refusals/approval prompts/notices.
+    #[serde(default)]
+    pub user_message_language: UserMessageLanguage,
     #[serde(default)]
     pub sleep_time: SleepTimeConfig,
     #[serde(default)]
@@ -2191,6 +2330,9 @@ impl Config {
             idle_checkin: IdleCheckinConfig::default(),
             heartbeat: HeartbeatConfig::default(),
             token_budget: TokenBudgetConfig::default(),
+            alerts: AlertsConfig::default(),
+            trust_report: TrustReportConfig::default(),
+            user_message_language: UserMessageLanguage::default(),
             sleep_time: SleepTimeConfig::default(),
             interjection: InterjectionConfig::default(),
             a2a: A2AConfig::default(),
@@ -2299,6 +2441,16 @@ impl Config {
 
     pub fn clawhub_lockfile_path(&self) -> PathBuf {
         self.data_root_dir().join("clawhub.lock.json")
+    }
+
+    /// Lockfile path plus block flag for load-time skill verification,
+    /// or `None` when `clawhub_verify_on_load: off`.
+    pub fn clawhub_load_verification(&self) -> Option<(PathBuf, bool)> {
+        match self.clawhub.verify_on_load {
+            ClawHubVerifyMode::Off => None,
+            ClawHubVerifyMode::Warn => Some((self.clawhub_lockfile_path(), false)),
+            ClawHubVerifyMode::Block => Some((self.clawhub_lockfile_path(), true)),
+        }
     }
 
     pub fn config_path_for_setup() -> PathBuf {
@@ -2976,6 +3128,9 @@ Use operator password + API keys for Web auth."
             }
             if self.clawhub.agent_tools_enabled {
                 add(Some(&self.clawhub.registry));
+            }
+            if self.alerts.enabled {
+                add(Some(&self.alerts.webhook_url));
             }
         }
 
@@ -4974,6 +5129,7 @@ subagents:
                 bearer_token: Some(" token ".into()),
                 description: Some(" executes ".into()),
                 default_session_key: Some(" team/work ".into()),
+                trust: Default::default(),
             },
         );
 

@@ -32,6 +32,15 @@ max_tool_iterations: 100
 #   reflector: claude-haiku-4-5    # cheaper model for the background memory reflector
 #   title: claude-haiku-4-5        # cheaper model for short session-title generation
 #   vision: claude-haiku-4-5       # model for image description (overrides media.vision.model)
+#   approval_reviewer: ""          # OPT-IN: model that writes a short advisory verdict on
+#                                  # high-risk approval prompts; unset/empty = off (no
+#                                  # fallback to the main model). Advisory only — a human
+#                                  # still decides.
+
+# Language for user-facing runtime messages (approval prompts, budget refusals):
+# en (default, historical output), zh, or bilingual. Approval reply keywords
+# ("approve"/"批准"/"always"/"总是"/option numbers) are recognized regardless.
+# user_message_language: en
 # Inject pending messages into the active agent loop between iterations (mid-turn injection)
 enable_mid_turn_injection: true
 # On non-web channels (Telegram, Discord, Slack, Feishu, Matrix, WeChat),
@@ -394,6 +403,27 @@ web_session_idle_ttl_seconds: 300
 # token_budget:
 #   daily_per_chat: 0
 #   exempt_control_chats: true
+
+# Operational webhook alerts: a supervised loop polls runtime health and POSTs
+# a JSON alert ({class, message, generated_at}) to webhook_url when a condition
+# trips: scheduler DLQ growth, provider down (circuit breaker open / repeated
+# failures), token-budget exhaustion, or a supervised-loop restart storm.
+# OFF by default. The webhook URL participates in the configured-endpoint
+# egress policy, and each delivery attempt is recorded in the audit chain.
+# alerts:
+#   enabled: false
+#   webhook_url: ""                # e.g. https://hooks.example.com/microclaw
+#   interval_secs: 60              # seconds between health polls (min 10)
+#   cooldown_secs: 900             # min seconds between same-class alerts
+#   restart_storm_threshold: 5     # restarts within one poll that count as a storm
+
+# Periodic trust report: a digest of what the agent actually did — task runs,
+# contract verdicts, token spend, guardrail interventions, delivery/recovery
+# health — delivered to every control chat. Built entirely from data MicroClaw
+# already records; no extra LLM calls. OFF by default.
+# trust_report:
+#   enabled: false
+#   interval_days: 7               # days between reports
 
 # "Sleep-time" memory consolidation: when a chat is idle, run a deterministic
 # (no-LLM) background pass that archives near-duplicate memories so the store stops

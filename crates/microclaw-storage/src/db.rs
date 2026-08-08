@@ -11948,6 +11948,118 @@ impl Database {
         Ok(count)
     }
 
+    /// Read a runtime key from the `db_meta` KV table (also used for
+    /// schema_version/embedding_dim). Namespaced keys recommended.
+    pub fn get_runtime_meta(&self, key: &str) -> Result<Option<String>, MicroClawError> {
+        let conn = self.lock_conn();
+        let value = conn
+            .query_row("SELECT value FROM db_meta WHERE key = ?1", [key], |row| {
+                row.get::<_, String>(0)
+            })
+            .optional()?;
+        Ok(value)
+    }
+
+    /// Upsert a runtime key in the `db_meta` KV table.
+    pub fn set_runtime_meta(&self, key: &str, value: &str) -> Result<(), MicroClawError> {
+        let conn = self.lock_conn();
+        conn.execute(
+            "INSERT INTO db_meta(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [key, value],
+        )?;
+        Ok(())
+    }
+
+    /// List runtime keys sharing a prefix (sorted by key).
+    pub fn list_runtime_meta_prefix(
+        &self,
+        prefix: &str,
+    ) -> Result<Vec<(String, String)>, MicroClawError> {
+        let conn = self.lock_conn();
+        let pattern = format!("{}%", prefix.replace('%', "\\%").replace('_', "\\_"));
+        let mut stmt = conn.prepare(
+            "SELECT key, value FROM db_meta WHERE key LIKE ?1 ESCAPE '\\' ORDER BY key",
+        )?;
+        let rows = stmt
+            .query_map([&pattern], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Delete a single runtime key; returns whether a row was removed.
+    pub fn delete_runtime_meta(&self, key: &str) -> Result<bool, MicroClawError> {
+        let conn = self.lock_conn();
+        let n = conn.execute("DELETE FROM db_meta WHERE key = ?1", [key])?;
+        Ok(n > 0)
+    }
+
+    /// Delete every runtime key sharing a prefix; returns removed count.
+    pub fn delete_runtime_meta_prefix(&self, prefix: &str) -> Result<usize, MicroClawError> {
+        let conn = self.lock_conn();
+        let pattern = format!("{}%", prefix.replace('%', "\\%").replace('_', "\\_"));
+        let n = conn.execute(
+            "DELETE FROM db_meta WHERE key LIKE ?1 ESCAPE '\\'",
+            [&pattern],
+        )?;
+        Ok(n)
+    }
+
+    /// Count audit-chain events of one kind recorded at or after `since`.
+    pub fn count_audit_events_since(
+        &self,
+        kind: &str,
+        since: &str,
+    ) -> Result<i64, MicroClawError> {
+        let conn = self.lock_conn();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM audit_logs WHERE kind = ?1 AND created_at >= ?2",
+            [kind, since],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
+    /// Exact depth of the scheduled-task dead-letter queue (unlike
+    /// `list_scheduled_task_dlq`, this is not clamped by a LIMIT).
+    pub fn count_scheduled_task_dlq(
+        &self,
+        include_replayed: bool,
+    ) -> Result<i64, MicroClawError> {
+        let conn = self.lock_conn();
+        let replay_filter = if include_replayed {
+            ""
+        } else {
+            " WHERE replayed_at IS NULL"
+        };
+        let count: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM scheduled_task_dlq{replay_filter}"),
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
+    /// Completion-contract verdict tallies (verified, failed) recorded at
+    /// or after `since` (RFC 3339). Verdicts are the `contract` events
+    /// written when a sub-agent run's exit criteria are checked.
+    pub fn contract_verdict_counts_since(
+        &self,
+        since: &str,
+    ) -> Result<(i64, i64), MicroClawError> {
+        let conn = self.lock_conn();
+        let counts = conn.query_row(
+            "SELECT
+                COALESCE(SUM(CASE WHEN detail LIKE 'verified%' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN detail LIKE 'failed%' THEN 1 ELSE 0 END), 0)
+             FROM subagent_events
+             WHERE event_type = 'contract' AND created_at >= ?1",
+            [since],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )?;
+        Ok(counts)
+    }
+
     /// Read-only delivery health snapshot for diagnostics and monitoring.
     pub fn outbound_delivery_health(&self) -> Result<OutboundDeliveryHealth, MicroClawError> {
         let conn = self.lock_conn();
@@ -13755,6 +13867,55 @@ mod tests {
             .unwrap();
         assert_eq!(total_since, 1);
         assert_eq!(success_since, 0);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_count_scheduled_task_dlq_is_not_limit_clamped() {
+        let (db, dir) = test_db();
+        let task_id = db
+            .create_scheduled_task(100, "test", "cron", "0 * * * * *", "2024-01-01T00:00:00Z")
+            .unwrap();
+        assert_eq!(db.count_scheduled_task_dlq(false).unwrap(), 0);
+        for i in 0..3 {
+            db.insert_scheduled_task_dlq(
+                task_id,
+                100,
+                "2024-01-01T00:00:00Z",
+                "2024-01-01T00:00:05Z",
+                5000 + i,
+                Some("Error: timeout"),
+            )
+            .unwrap();
+        }
+        assert_eq!(db.count_scheduled_task_dlq(false).unwrap(), 3);
+        assert_eq!(db.count_scheduled_task_dlq(true).unwrap(), 3);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_contract_verdict_counts_since_aggregates_verdicts() {
+        let (db, dir) = test_db();
+        db.append_subagent_event("run-1", "contract", Some("verified 2/2"))
+            .unwrap();
+        db.append_subagent_event("run-2", "contract", Some("failed 1/3"))
+            .unwrap();
+        db.append_subagent_event("run-2", "contract", Some("verified 3/3"))
+            .unwrap();
+        // Non-contract events must not count.
+        db.append_subagent_event("run-3", "submit_result", None).unwrap();
+
+        let (verified, failed) = db
+            .contract_verdict_counts_since("2000-01-01T00:00:00Z")
+            .unwrap();
+        assert_eq!(verified, 2);
+        assert_eq!(failed, 1);
+
+        let (verified, failed) = db
+            .contract_verdict_counts_since("2999-01-01T00:00:00Z")
+            .unwrap();
+        assert_eq!(verified, 0);
+        assert_eq!(failed, 0);
         cleanup(&dir);
     }
 

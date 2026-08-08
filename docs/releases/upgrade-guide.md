@@ -15,6 +15,50 @@ Use this guide for rolling upgrades that may include schema/auth/hooks/session/m
 
 On first start, schema migrations are applied automatically.
 
+### v0.4.0 (in progress)
+
+No schema migration beyond v0.3.x is required by the v0.4.0 work so far.
+Changes to be aware of when upgrading from any v0.3.x:
+
+**New config sections (all backward-compatible):**
+
+- `alerts` — opt-in operational webhook alerts (off by default; see
+  [status-and-alerts](../operations/status-and-alerts.md)). No action needed
+  unless you enable it; when enabled, `alerts.webhook_url` is validated
+  against the configured-endpoint egress policy at startup.
+- `clawhub_verify_on_load` — load-time integrity verification of
+  ClawHub-installed skills against the lockfile tree hash. **Defaults to
+  `block`**: a managed skill whose files were modified after install becomes
+  unavailable until reinstalled. This is a deliberate fail-closed security
+  default; set `warn` or `off` to restore the old behavior. Skills installed
+  before tree hashing existed are never blocked (they warn until
+  reinstalled), so a plain upgrade cannot strand an old install.
+
+**Surface changes (additive):**
+
+- `/status` now also reports scheduler DLQ depth, 24h contract verdicts,
+  token-budget usage, provider failover/breaker health, and loop restart
+  counters. `GET /api/governance` gains `contracts`, `provider_health`, and
+  `alerts` sections.
+- Every release now attaches `reliability-scorecard-<tag>.{json,md}` to its
+  GitHub release assets.
+- High-risk approval prompts are numbered option cards with an
+  "always allow in this chat" option (standing grants, managed via
+  `/approvals`); web clients get a structured `approval_required` stream
+  event. See [secure-runtime](../security/secure-runtime.md#3b-structured-high-risk-approvals).
+- New `microclaw canary <model>` probes a candidate model (responds +
+  tool-calling) before you switch `model:` in config.
+- MCP servers and A2A peers accept a `trust` tier
+  (trusted/limited/sandboxed); omitted = `limited` = historical behavior.
+
+**Post-upgrade validation additions:**
+
+1. Run `microclaw skill verify` — confirm no unexpected `✗` rows before
+   relying on `clawhub_verify_on_load: block`.
+2. Send `/status` in a chat — confirm the new health lines render.
+3. If alerts are enabled: temporarily set `interval_secs: 10`, verify the
+   startup log line `alerts: loop started`, then restore your cadence.
+
 ### v0.3.4
 
 Upgrading to v0.3.4 advances the SQLite schema to v43. The migration adds

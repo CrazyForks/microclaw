@@ -81,6 +81,9 @@ pub fn build_help_response() -> String {
         "  /learning [run_id|journal] Show run evidence or the self-learning journal",
         "  /rewind [id]         List or restore conversation checkpoints",
         "",
+        "Safety",
+        "  /approvals [clear]   List or revoke standing high-risk tool approvals for this chat",
+        "",
         "Diagnostics (admin only)",
         "  /log [N] [keyword]   Tail last N log lines (default 100, max 300); filter by keyword",
         "",
@@ -621,6 +624,54 @@ pub async fn handle_chat_command(
         );
     }
 
+    if trimmed == "/approvals" || trimmed == "/approvals clear" {
+        let prefix = format!("approved_tool:{chat_id}:");
+        if trimmed == "/approvals clear" {
+            let removed = call_blocking(state.db.clone(), {
+                let prefix = prefix.clone();
+                move |db| {
+                    let removed = db.delete_runtime_meta_prefix(&prefix)?;
+                    if removed > 0 {
+                        db.log_audit_event(
+                            "approval",
+                            &format!("chat:{chat_id}"),
+                            "standing_grants_cleared",
+                            None,
+                            "removed",
+                            Some(&format!("{removed} grant(s)")),
+                        )?;
+                    }
+                    Ok::<_, microclaw_core::error::MicroClawError>(removed)
+                }
+            })
+            .await;
+            return Some(match removed {
+                Ok(0) => "No standing tool approvals to clear for this chat.".to_string(),
+                Ok(n) => format!("Cleared {n} standing tool approval(s) for this chat."),
+                Err(e) => format!("Failed to clear standing approvals: {e}"),
+            });
+        }
+        let grants =
+            call_blocking(state.db.clone(), move |db| db.list_runtime_meta_prefix(&prefix)).await;
+        return Some(match grants {
+            Ok(rows) if rows.is_empty() => {
+                "No standing tool approvals for this chat. Reply \"2\" or \"always\" to an \
+                 approval prompt to add one."
+                    .to_string()
+            }
+            Ok(rows) => {
+                let mut out = String::from("Standing tool approvals for this chat:\n");
+                for (key, since) in rows {
+                    let tool = key.rsplit(':').next().unwrap_or(&key);
+                    out.push_str(&format!("- {tool} (since {since})\n"));
+                }
+                out.push_str("Revoke them all with /approvals clear.");
+                out
+            }
+            Err(e) => format!("Failed to list standing approvals: {e}"),
+        });
+    }
+
     if trimmed == "/log"
         || trimmed == "/logs"
         || trimmed.starts_with("/log ")
@@ -793,8 +844,72 @@ pub async fn build_status_response(
         Err(error) => format!("Durable runtime: unavailable ({error})"),
     };
 
+    let since_24h = (chrono::Utc::now() - chrono::Duration::hours(24)).to_rfc3339();
+    let health_line = match call_blocking(db.clone(), {
+        let since = since_24h.clone();
+        move |db| {
+            let dlq = db.count_scheduled_task_dlq(false)?;
+            let contracts = db.contract_verdict_counts_since(&since)?;
+            Ok::<_, microclaw_core::error::MicroClawError>((dlq, contracts))
+        }
+    })
+    .await
+    {
+        Ok((dlq, (verified, failed))) => {
+            let contracts = if verified + failed == 0 {
+                "Contracts (24h): none".to_string()
+            } else {
+                format!("Contracts (24h): verified={verified} failed={failed}")
+            };
+            format!("Scheduler DLQ: {dlq} unreplayed\n{contracts}")
+        }
+        Err(e) => format!("Scheduler DLQ: unavailable ({e})"),
+    };
+
+    let budget_line = {
+        let budget = config.token_budget.daily_per_chat;
+        if budget > 0 {
+            match call_blocking(db.clone(), move |db| {
+                db.get_llm_usage_summary_since(Some(chat_id), Some(&since_24h))
+            })
+            .await
+            {
+                Ok(usage) => format!(
+                    "Token budget: {} of {budget} used in the last 24h",
+                    usage.total_tokens
+                ),
+                Err(e) => format!("Token budget: unavailable ({e})"),
+            }
+        } else {
+            "Token budget: off".to_string()
+        }
+    };
+
+    let provider_snapshot = crate::llm::provider_failover_snapshot();
+    let provider_line = format!(
+        "Provider health: fallbacks={} consecutive_failures={}{}",
+        provider_snapshot.total_fallbacks,
+        provider_snapshot.consecutive_failures,
+        if provider_snapshot.breaker_open {
+            " (circuit breaker OPEN)"
+        } else {
+            ""
+        }
+    );
+
+    let restarts = crate::supervision::restart_counts();
+    let restart_line = if restarts.is_empty() {
+        "Loop restarts: none".to_string()
+    } else {
+        let parts: Vec<String> = restarts
+            .iter()
+            .map(|(name, count)| format!("{name}={count}"))
+            .collect();
+        format!("Loop restarts: {}", parts.join(" "))
+    };
+
     format!(
-        "Status\nChannel: {caller_channel}\nProvider: {provider}\nModel: {model}\n{session_line}\n{task_line}\n{runtime_line}"
+        "Status\nChannel: {caller_channel}\nProvider: {provider}\nModel: {model}\n{session_line}\n{task_line}\n{runtime_line}\n{health_line}\n{budget_line}\n{provider_line}\n{restart_line}"
     )
 }
 
