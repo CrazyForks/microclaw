@@ -779,8 +779,29 @@ pub(crate) fn parse_approval_reply(text: &str) -> ApprovalReply {
     }
 }
 
-fn is_explicit_user_approval(text: &str) -> bool {
-    !matches!(parse_approval_reply(text), ApprovalReply::DenyOrOther)
+/// How long a pending-approval marker may be converted into a standing
+/// grant. Past this, an "always" reply is treated as unrelated to the old
+/// prompt (the one-shot approval flow is unaffected — this only guards the
+/// standing-grant conversion).
+const PENDING_APPROVAL_TTL_MINS: i64 = 60;
+
+/// Parse a `pending_approval_tool` marker (`"<tool>\n<rfc3339>"`) and return
+/// the tool name only while the marker is fresh. Markers without a
+/// timestamp (written by v0.4.0) are treated as expired — fail closed.
+fn pending_approval_tool(value: &str, now: chrono::DateTime<chrono::Utc>) -> Option<String> {
+    let (tool, at) = value.split_once('\n')?;
+    let at = chrono::DateTime::parse_from_rfc3339(at.trim()).ok()?;
+    let age = now.signed_duration_since(at.with_timezone(&chrono::Utc));
+    if age > chrono::Duration::minutes(PENDING_APPROVAL_TTL_MINS) || age < chrono::Duration::zero()
+    {
+        return None;
+    }
+    let tool = tool.trim();
+    if tool.is_empty() {
+        None
+    } else {
+        Some(tool.to_string())
+    }
 }
 
 const APPROVAL_REVIEWER_SYSTEM_PROMPT: &str = "You are a security reviewer annotating a \
@@ -1310,35 +1331,53 @@ async fn process_with_agent_logic(
 
     metrics.input_text = latest_user_text_for_approval.clone();
 
-    let approval_reply = parse_approval_reply(&latest_user_text_for_approval);
-    let explicit_user_approval = is_explicit_user_approval(&latest_user_text_for_approval);
-    if approval_reply == ApprovalReply::ApproveAlways {
-        // "Always allow" replies convert the pending approval (recorded when
-        // the previous turn paused) into a standing per-chat allowance,
-        // consulted at the registry choke point and sealed into the audit
-        // chain. Advisory failures here must not block the approval itself.
+    // An approval reply is only meaningful when a previous turn actually
+    // paused for approval in THIS chat. We gate on the pending marker so a
+    // bare "1"/"2" (or the word "approve") in an ordinary conversation —
+    // e.g. answering an unrelated multiple-choice question — is never
+    // mistaken for high-risk tool approval. Non-user turns (scheduler,
+    // heartbeat: override_prompt is set) must never consume the marker or
+    // count as approval, since no human is replying.
+    let mut explicit_user_approval = false;
+    if override_prompt.is_none() {
         let pending_key = format!("pending_approval_tool:{chat_id}");
-        if let Ok(Some(tool)) = call_blocking(state.db.clone(), {
+        // Any user reply consumes the pending marker (approve, deny, or an
+        // unrelated message all resolve the pause).
+        let pending = call_blocking(state.db.clone(), {
             let pending_key = pending_key.clone();
-            move |db| db.get_runtime_meta(&pending_key)
+            move |db| {
+                let value = db.get_runtime_meta(&pending_key)?;
+                if value.is_some() {
+                    db.delete_runtime_meta(&pending_key)?;
+                }
+                Ok::<_, microclaw_core::error::MicroClawError>(value)
+            }
         })
         .await
+        .unwrap_or_default();
+        // Honor the reply only within the freshness window; a stale or
+        // legacy (timestampless) marker fails closed.
+        if let Some(tool) =
+            pending.and_then(|value| pending_approval_tool(&value, chrono::Utc::now()))
         {
-            let grant_key = format!("approved_tool:{chat_id}:{tool}");
-            let _ = call_blocking(state.db.clone(), move |db| {
-                db.set_runtime_meta(&grant_key, &chrono::Utc::now().to_rfc3339())?;
-                db.delete_runtime_meta(&pending_key)?;
-                db.log_audit_event(
-                    "approval",
-                    &format!("chat:{chat_id}"),
-                    "standing_grant",
-                    Some(&tool),
-                    "recorded",
-                    Some("operator replied 'always allow' to an approval prompt"),
-                )?;
-                Ok::<_, microclaw_core::error::MicroClawError>(())
-            })
-            .await;
+            let reply = parse_approval_reply(&latest_user_text_for_approval);
+            explicit_user_approval = reply != ApprovalReply::DenyOrOther;
+            if reply == ApprovalReply::ApproveAlways {
+                let grant_key = format!("approved_tool:{chat_id}:{tool}");
+                let _ = call_blocking(state.db.clone(), move |db| {
+                    db.set_runtime_meta(&grant_key, &chrono::Utc::now().to_rfc3339())?;
+                    db.log_audit_event(
+                        "approval",
+                        &format!("chat:{chat_id}"),
+                        "standing_grant",
+                        Some(&tool),
+                        "recorded",
+                        Some("operator replied 'always allow' to an approval prompt"),
+                    )?;
+                    Ok::<_, microclaw_core::error::MicroClawError>(())
+                })
+                .await;
+            }
         }
     }
 
@@ -2507,13 +2546,16 @@ async fn process_with_agent_logic(
                 let tool_name = batch_ctx
                     .waiting_approval_tool
                     .unwrap_or_else(|| "this tool".to_string());
-                // Remember which tool is pending so an "always allow" reply
-                // next turn can be converted into a standing grant.
+                // Remember which tool is pending (with a timestamp) so an
+                // "always allow" reply next turn can be converted into a
+                // standing grant. The reply handler consumes this marker on
+                // ANY next message and honors it only within the freshness
+                // window.
                 {
                     let pending_key = format!("pending_approval_tool:{chat_id}");
-                    let tool = tool_name.clone();
+                    let value = format!("{tool_name}\n{}", chrono::Utc::now().to_rfc3339());
                     let _ = call_blocking(state.db.clone(), move |db| {
-                        db.set_runtime_meta(&pending_key, &tool)
+                        db.set_runtime_meta(&pending_key, &value)
                     })
                     .await;
                 }
@@ -5130,14 +5172,12 @@ mod tests {
 
     #[test]
     fn test_is_explicit_user_approval() {
-        assert!(super::is_explicit_user_approval(
-            "<user_message sender=\"u\">批准</user_message>"
-        ));
-        assert!(super::is_explicit_user_approval("Go ahead and run it"));
-        assert!(!super::is_explicit_user_approval("不要执行"));
-        assert!(!super::is_explicit_user_approval(
-            "not approve this command"
-        ));
+        use super::{parse_approval_reply, ApprovalReply};
+        let approves = |t: &str| parse_approval_reply(t) != ApprovalReply::DenyOrOther;
+        assert!(approves("<user_message sender=\"u\">批准</user_message>"));
+        assert!(approves("Go ahead and run it"));
+        assert!(!approves("不要执行"));
+        assert!(!approves("not approve this command"));
     }
 
     #[test]
@@ -5168,6 +5208,30 @@ mod tests {
         // Denials, including the new numbered form.
         assert_eq!(parse_approval_reply("拒绝"), ApprovalReply::DenyOrOther);
         assert_eq!(parse_approval_reply("deny"), ApprovalReply::DenyOrOther);
+    }
+
+    #[test]
+    fn test_pending_approval_tool_ttl_and_formats() {
+        use super::pending_approval_tool;
+        let now = chrono::Utc::now();
+        let fresh = format!("bash\n{}", (now - chrono::Duration::minutes(5)).to_rfc3339());
+        assert_eq!(pending_approval_tool(&fresh, now).as_deref(), Some("bash"));
+
+        // Stale markers must never convert into a standing grant.
+        let stale = format!("bash\n{}", (now - chrono::Duration::hours(2)).to_rfc3339());
+        assert_eq!(pending_approval_tool(&stale, now), None);
+
+        // Legacy (v0.4.0, no timestamp) and malformed values fail closed.
+        assert_eq!(pending_approval_tool("bash", now), None);
+        assert_eq!(pending_approval_tool("bash\nnot-a-time", now), None);
+        assert_eq!(
+            pending_approval_tool(&format!("\n{}", now.to_rfc3339()), now),
+            None
+        );
+
+        // A marker "from the future" (clock skew) also fails closed.
+        let future = format!("bash\n{}", (now + chrono::Duration::minutes(10)).to_rfc3339());
+        assert_eq!(pending_approval_tool(&future, now), None);
     }
 
     #[test]

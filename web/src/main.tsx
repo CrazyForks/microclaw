@@ -1287,8 +1287,8 @@ function ThreadPane({ adapter, initialMessages, runtimeKey, pendingApproval }: T
 
   return (
     <AssistantRuntimeProvider key={runtimeKey} runtime={runtime}>
-      {pendingApproval ? <ApprovalBar approval={pendingApproval} /> : null}
-      <div className="aui-root h-full min-h-0">
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="aui-root min-h-0 flex-1">
         <Thread
           assistantMessage={{
             allowCopy: true,
@@ -1314,6 +1314,8 @@ function ThreadPane({ adapter, initialMessages, runtimeKey, pendingApproval }: T
           }}
           assistantAvatar={{ fallback: 'M' }}
         />
+        </div>
+        {pendingApproval ? <ApprovalBar approval={pendingApproval} /> : null}
       </div>
     </AssistantRuntimeProvider>
   )
@@ -3218,6 +3220,10 @@ function App() {
 
   useEffect(() => {
     writeSessionToUrl(sessionKey)
+    // A pending approval belongs to the session it was raised in; switching
+    // sessions must drop it so its buttons can't post a reply into an
+    // unrelated chat.
+    setPendingApproval(null)
   }, [sessionKey])
 
   const runtimeKey = `${sessionKey}-${runtimeNonce}`
